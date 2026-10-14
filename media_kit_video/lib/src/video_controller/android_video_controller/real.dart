@@ -68,10 +68,23 @@ class AndroidVideoController extends PlatformVideoController {
           if (configuration.vo == 'mediacodec_embed') 'vid': vidValue,
         },
       );
-      // Instead of seeking to the start (Duration.zero), seek to the current playback position
-      // without jumping the user to the start of the media.
-      final currentPosition = player.state.position;
-      await player.seek(currentPosition);
+      // PURELIVE PATCH: no `player.seek` here. Re-assigning `vo` already makes
+      // mpv re-initialize the video chain on the new Surface. The upstream
+      // refresh seek is refused by live streams ("Cannot seek in this stream")
+      // and costs a visible stall plus a rebuffer on every Surface change
+      // (startup, rotation, PiP, fullscreen, resize).
+    });
+  }
+
+  /// PURELIVE PATCH: updates dimensions without resetting `vo` when Flutter
+  /// kept the same Surface/WID. Resetting `vo` for a geometry-only change
+  /// causes a visible pause and may force a live decoder to reconnect.
+  Future<void> _updateSurfaceGeometry(Rect nextRect) {
+    return lock.synchronized(() async {
+      await setProperty(
+        'android-surface-size',
+        '${nextRect.width.toInt()}x${nextRect.height.toInt()}',
+      );
     });
   }
 
@@ -121,6 +134,10 @@ class AndroidVideoController extends PlatformVideoController {
           width.toDouble(),
           height.toDouble(),
         );
+        // PURELIVE PATCH: the Java `VideoOutput.Resize` callback can arrive
+        // after this reply and then sees no geometry change, so apply the new
+        // size to mpv here as well (already inside [lock]).
+        await setProperty('android-surface-size', '${width}x$height');
 
         if (!waitUntilFirstFrameRenderedCompleter.isCompleted) {
           waitUntilFirstFrameRenderedCompleter.complete();
@@ -261,9 +278,21 @@ class AndroidVideoController extends PlatformVideoController {
                     );
                     final int id = call.arguments['id'];
                     final int wid = call.arguments['wid'];
-                    _controllers[handle]?.rect.value = rect;
-                    _controllers[handle]?.id.value = id;
-                    _controllers[handle]?.wid.value = wid;
+                    final controller = _controllers[handle];
+                    if (controller == null) break;
+                    // PURELIVE PATCH: only a new WID (a different Java
+                    // Surface) goes through [widListener]'s vo/wid
+                    // transaction; a geometry-only update just resizes.
+                    final bindingChanged = controller.wid.value != wid;
+                    final geometryChanged = controller.rect.value != rect;
+                    controller.rect.value = rect;
+                    controller.id.value = id;
+                    if (bindingChanged) {
+                      // [widListener] reads [rect] published above.
+                      controller.wid.value = wid;
+                    } else if (geometryChanged) {
+                      await controller._updateSurfaceGeometry(rect);
+                    }
                     break;
                   }
                 case 'VideoOutput.WaitUntilFirstFrameRenderedNotify':
