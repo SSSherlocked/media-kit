@@ -66,6 +66,13 @@ class NativeVideoController extends PlatformVideoController {
   /// [StreamSubscription] for listening to video [Rect].
   StreamSubscription<VideoParams>? videoParamsSubscription;
 
+  /// PURELIVE PATCH: true from a stream's unload until the next stream
+  /// reports its size; [rect] stays null meanwhile.
+  bool _unloaded = false;
+
+  /// PURELIVE PATCH: the output's texture rect, kept while [rect] is hidden.
+  Rect? _outputRect;
+
   /// {@macro native_video_controller}
   NativeVideoController._(
     super.player,
@@ -75,7 +82,23 @@ class NativeVideoController extends PlatformVideoController {
     videoParamsSubscription = player.stream.videoParams.listen(
       (event) => lock.synchronized(() async {
         if ([0, null].contains(event.dw) || [0, null].contains(event.dh)) {
+          // PURELIVE PATCH: no picture size means the stream was unloaded
+          // (Player.stop) or its video track turned off. The texture still
+          // holds the last frame of that stream: hide it until the next
+          // stream reports its size, and forget the size so that stream
+          // sets its own even when it is the same.
+          _unloaded = true;
+          videoParamsWidth = null;
+          videoParamsHeight = null;
+          if (rect.value != null) rect.value = null;
           return;
+        }
+        if (_unloaded) {
+          _unloaded = false;
+          // The output keeps its texture size across streams, and a stream
+          // of the same size gets no resize callback: show the texture again
+          // now that a stream draws into it.
+          if (_outputRect != null) rect.value = _outputRect;
         }
 
         final int handle = await player.handle;
@@ -275,8 +298,12 @@ class NativeVideoController extends PlatformVideoController {
                       call.arguments['rect']['height'] * 1.0,
                     );
                     final int id = call.arguments['id'];
-                    _controllers[handle]?.rect.value = rect;
-                    _controllers[handle]?.id.value = id;
+                    final controller = _controllers[handle];
+                    controller?._outputRect = rect;
+                    if (controller != null && !controller._unloaded) {
+                      controller.rect.value = rect;
+                    }
+                    controller?.id.value = id;
                     // Notify about the first frame being rendered.
                     if (rect.width > 0 && rect.height > 0) {
                       final completer = _controllers[handle]

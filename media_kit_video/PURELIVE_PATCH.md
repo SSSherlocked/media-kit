@@ -34,11 +34,21 @@ showed and a ~2 s rebuffer afterwards.
      "already deleted" set is gone because reference values can be reused.
    - `dispose()` clears the producer callback and detaches before releasing,
      and ignores later callbacks.
+3. An unloaded stream leaves no picture behind
+   (`android_video_controller/real.dart`, `native_video_controller/real.dart`).
+   A stopped player (`Player.stop`) reports no video size, but both
+   controllers ignored an empty size and kept their rect, so `Video` went on
+   drawing the texture, which still held the last frame of the stream that
+   was stopped: the next stream on the same player (PureLive keeps a stopped
+   player warm for the next room) showed the previous room's picture until
+   its own first frame. Now an empty size drops the rect; the next stream's
+   size restores it. The native (desktop) controller keeps the output's rect
+   while hidden, because a same-sized stream gets no resize callback.
 
 ## Re-applying on upgrade
 
 1. Rebase the `pure-live` branch onto the new upstream commit; resolve
-   conflicts in the two files above only.
+   conflicts in the files above only.
 2. Check that upstream still seeks in `widListener` and still creates a new
    global reference in `VideoOutput.onSurfaceAvailable`; drop the matching
    part of this patch if upstream fixed it.

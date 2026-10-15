@@ -111,9 +111,18 @@ class AndroidVideoController extends PlatformVideoController {
         }
 
         final isZero = width == 0 || height == 0;
+        // PURELIVE PATCH: no picture size means the stream was unloaded
+        // (Player.stop) or its video track turned off. The surface texture
+        // still holds the last frame of that stream; dropping the rect stops
+        // [Video] from drawing it, and the next stream's first size puts it
+        // back (a null rect never compares as the same size).
+        if (isZero) {
+          if (rect.value != null) rect.value = null;
+          return;
+        }
         final isSame = width == rect.value?.width.toInt() &&
             height == rect.value?.height.toInt();
-        if (isZero || isSame) {
+        if (isSame) {
           return;
         }
 
